@@ -26,5 +26,6 @@ func registerRoutes(router *gin.Engine) {
 func healthHandler(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{
 		"status": "ok",
+		"checks": gin.H{},
 	})
 }

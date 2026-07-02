@@ -42,3 +42,20 @@ Modules:
 - rooms
 - battle
 - questions
+## Locked Decisions (DO NOT CHANGE)
+
+Backend Framework:
+- Gin (mandatory)
+
+Architecture:
+- Modular Monolith
+
+MVP Constraints:
+- 1v1 only
+- Quiz based
+- No coding judge
+- No Docker sandbox
+
+Important:
+- Extend existing scaffold incrementally
+- Never rewrite architecture unless explicitly requested
