@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"dsablitz/backend/configs"
+	"dsablitz/backend/internal/platform/database"
 	"errors"
 	"net/http"
 
@@ -15,10 +16,12 @@ type Server struct {
 	http   *http.Server
 }
 
-func New(config configs.Config) *Server {
+func New(config configs.Config, db *database.Manager) (*Server, error) {
 	router := gin.New()
 	router.Use(middlewares()...)
-	registerRoutes(router)
+	if err := registerRoutes(router, config, db); err != nil {
+		return nil, err
+	}
 
 	httpServer := &http.Server{
 		Addr:    config.HTTPAddr,
@@ -29,7 +32,7 @@ func New(config configs.Config) *Server {
 		config: config,
 		router: router,
 		http:   httpServer,
-	}
+	}, nil
 }
 
 func (s *Server) Run() error {

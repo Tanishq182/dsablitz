@@ -40,7 +40,10 @@ func main() {
 		}
 	}()
 
-	srv := server.New(cfg)
+	srv, err := server.New(cfg, db)
+	if err != nil {
+		log.Fatalf("server initialization failed: %v", err)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

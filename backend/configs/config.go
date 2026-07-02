@@ -22,6 +22,10 @@ type Config struct {
 	HTTPAddr    string
 }
 
+func (c Config) IsProduction() bool {
+	return c.Env == "production"
+}
+
 func Load() Config {
 	_ = godotenv.Load(".env", "backend/.env")
 
