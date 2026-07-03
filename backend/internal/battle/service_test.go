@@ -268,3 +268,35 @@ func TestBattleService_SubmitAnswer_CompletedBattle(t *testing.T) {
 		t.Error("expected submission in completed battle to fail, got nil error")
 	}
 }
+
+func TestBattleService_StartBattleTx(t *testing.T) {
+	repo := newMockBattleRepository()
+	q1 := uuid.New()
+	qs := &mockQuestionsService{
+		activeQuestions: []questions.Question{
+			{ID: q1, IsActive: true},
+		},
+	}
+	service := NewService(repo, qs)
+	ctx := context.Background()
+
+	roomID := uuid.New()
+	userID1 := uuid.New()
+	players := []BattlePlayer{
+		{UserID: userID1, RatingBefore: 1200},
+	}
+
+	battleID, err := service.StartBattleTx(ctx, nil, roomID, players, 42)
+	if err != nil {
+		t.Fatalf("failed to start battle with tx: %v", err)
+	}
+	if battleID == uuid.Nil {
+		t.Fatal("expected non-nil battle ID")
+	}
+	if repo.battle.ID != battleID {
+		t.Errorf("expected battle ID %s in repo, got %s", battleID, repo.battle.ID)
+	}
+	if repo.battle.Status != StatusActive {
+		t.Errorf("expected battle status to be %s, got %s", StatusActive, repo.battle.Status)
+	}
+}

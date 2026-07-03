@@ -171,10 +171,10 @@ func (r *Repository) GetQuestionIDAtSequenceIndex(ctx context.Context, battleID 
 func (r *Repository) CompleteBattle(ctx context.Context, battleID uuid.UUID) error {
 	_, err := r.db.Exec(ctx, `
 		UPDATE battles
-		SET status = 'completed',
+		SET status = $2,
 		    updated_at = NOW()
 		WHERE id = $1
-	`, battleID)
+	`, battleID, StatusCompleted)
 	if err != nil {
 		return fmt.Errorf("complete battle status: %w", err)
 	}

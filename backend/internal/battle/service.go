@@ -48,6 +48,20 @@ func NewService(repo BattleRepository, qs QuestionsService) *Service {
 
 // StartBattle initializes a battle sequence, saves metadata, player slots, and sequence indexes.
 func (s *Service) StartBattle(ctx context.Context, roomID uuid.UUID, players []BattlePlayer, seed int64) (uuid.UUID, error) {
+	var battleID uuid.UUID
+	err := s.repo.WithTransaction(ctx, func(tx pgx.Tx) error {
+		var err error
+		battleID, err = s.StartBattleTx(ctx, tx, roomID, players, seed)
+		return err
+	})
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return battleID, nil
+}
+
+// StartBattleTx initializes a battle sequence inside the parent transaction.
+func (s *Service) StartBattleTx(ctx context.Context, tx pgx.Tx, roomID uuid.UUID, players []BattlePlayer, seed int64) (uuid.UUID, error) {
 	// 1. Get active questions from Questions module
 	activeQuestions, err := s.questionsService.GetActiveQuestionsByFilters(ctx, 0, nil)
 	if err != nil {
@@ -79,21 +93,15 @@ func (s *Service) StartBattle(ctx context.Context, roomID uuid.UUID, players []B
 		players[i].IncorrectCount = 0
 	}
 
-	// 4. Execute coordinated writes inside one database transaction
-	err = s.repo.WithTransaction(ctx, func(tx pgx.Tx) error {
-		if err := s.repo.InsertBattle(ctx, tx, b); err != nil {
-			return err
-		}
-		if err := s.repo.InsertBattlePlayers(ctx, tx, players); err != nil {
-			return err
-		}
-		if err := s.repo.InsertBattleSequence(ctx, tx, battleID, sequence); err != nil {
-			return err
-		}
-		return nil
-	})
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("execute initialization database writes: %w", err)
+	// 4. Execute coordinated writes inside the parent transaction
+	if err := s.repo.InsertBattle(ctx, tx, b); err != nil {
+		return uuid.Nil, err
+	}
+	if err := s.repo.InsertBattlePlayers(ctx, tx, players); err != nil {
+		return uuid.Nil, err
+	}
+	if err := s.repo.InsertBattleSequence(ctx, tx, battleID, sequence); err != nil {
+		return uuid.Nil, err
 	}
 
 	return battleID, nil

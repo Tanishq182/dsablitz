@@ -12,9 +12,11 @@ import (
 type BattleStatus string
 
 const (
-	StatusPending   BattleStatus = "pending"
+	StatusPending   BattleStatus = "created"
+	StatusCountdown BattleStatus = "countdown"
 	StatusActive    BattleStatus = "active"
-	StatusCompleted BattleStatus = "completed"
+	StatusCompleted BattleStatus = "finished"
+	StatusAborted   BattleStatus = "aborted"
 )
 
 // MaxQuestionStreamSize defines the maximum number of pre-generated questions in a stream.
