@@ -4,12 +4,22 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"dsablitz/backend/internal/questions"
 )
+
+// Mock Clock
+type mockClock struct {
+	now time.Time
+}
+
+func (m *mockClock) Now() time.Time {
+	return m.now
+}
 
 // Mock Questions Service
 type mockQuestionsService struct {
@@ -34,6 +44,17 @@ func (m *mockQuestionsService) GetActiveQuestionsByFilters(ctx context.Context, 
 	return m.activeQuestions, nil
 }
 
+type userIDKey struct {
+	battleID   uuid.UUID
+	userID     uuid.UUID
+	questionID uuid.UUID
+}
+
+type userIDKey2 struct {
+	battleID uuid.UUID
+	userID   uuid.UUID
+}
+
 // Mock Battle Repository
 type mockBattleRepository struct {
 	battle     Battle
@@ -45,12 +66,17 @@ type mockBattleRepository struct {
 		qID       uuid.UUID
 		isCorrect bool
 	}
+	submissionsForQuestion map[userIDKey][]questions.SubmissionAnswer
+	lastSubmissionTime     map[userIDKey2]time.Time
+	clock                  Clock
 }
 
 func newMockBattleRepository() *mockBattleRepository {
 	return &mockBattleRepository{
-		players:  make(map[uuid.UUID]BattlePlayer),
-		sequence: []uuid.UUID{},
+		players:                make(map[uuid.UUID]BattlePlayer),
+		sequence:               []uuid.UUID{},
+		submissionsForQuestion: make(map[userIDKey][]questions.SubmissionAnswer),
+		lastSubmissionTime:     make(map[userIDKey2]time.Time),
 	}
 }
 
@@ -82,6 +108,10 @@ func (m *mockBattleRepository) GetBattle(ctx context.Context, id uuid.UUID) (Bat
 	return Battle{}, ErrNotFound
 }
 
+func (m *mockBattleRepository) GetBattleTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (Battle, error) {
+	return m.GetBattle(ctx, id)
+}
+
 func (m *mockBattleRepository) GetBattlePlayerForUpdate(ctx context.Context, tx pgx.Tx, battleID, userID uuid.UUID) (BattlePlayer, error) {
 	p, ok := m.players[userID]
 	if ok && p.BattleID == battleID {
@@ -103,14 +133,56 @@ func (m *mockBattleRepository) UpdateBattlePlayer(ctx context.Context, tx pgx.Tx
 	return nil
 }
 
-func (m *mockBattleRepository) InsertSubmission(ctx context.Context, tx pgx.Tx, bID, uID, qID uuid.UUID, isCorrect bool, responseTimeMs int) error {
+func (m *mockBattleRepository) InsertSubmission(ctx context.Context, tx pgx.Tx, bID, uID, qID uuid.UUID, answer questions.SubmissionAnswer, isCorrect bool, scoreAwarded int, responseTimeMs int) error {
 	m.submission = append(m.submission, struct {
 		bID       uuid.UUID
 		uID       uuid.UUID
 		qID       uuid.UUID
 		isCorrect bool
 	}{bID, uID, qID, isCorrect})
+
+	key := userIDKey{battleID: bID, userID: uID, questionID: qID}
+	m.submissionsForQuestion[key] = append(m.submissionsForQuestion[key], answer)
+
+	key2 := userIDKey2{battleID: bID, userID: uID}
+	if m.clock != nil {
+		m.lastSubmissionTime[key2] = m.clock.Now()
+	} else {
+		m.lastSubmissionTime[key2] = time.Now()
+	}
 	return nil
+}
+
+func (m *mockBattleRepository) GetSubmissionsForQuestion(ctx context.Context, tx pgx.Tx, battleID, userID, questionID uuid.UUID) ([]questions.SubmissionAnswer, error) {
+	key := userIDKey{battleID: battleID, userID: userID, questionID: questionID}
+	return m.submissionsForQuestion[key], nil
+}
+
+func (m *mockBattleRepository) GetLastSubmission(ctx context.Context, tx pgx.Tx, battleID, userID uuid.UUID) (time.Time, error) {
+	key2 := userIDKey2{battleID: battleID, userID: userID}
+	return m.lastSubmissionTime[key2], nil
+}
+
+func (m *mockBattleRepository) GetPlayerQuestionState(ctx context.Context, battleID, userID uuid.UUID) (PlayerQuestionState, error) {
+	b, err := m.GetBattle(ctx, battleID)
+	if err != nil {
+		return PlayerQuestionState{}, err
+	}
+	p, err := m.GetBattlePlayer(ctx, battleID, userID)
+	if err != nil {
+		return PlayerQuestionState{}, err
+	}
+	qID := uuid.Nil
+	if p.CurrentQuestionIndex >= 0 && p.CurrentQuestionIndex < len(m.sequence) {
+		qID = m.sequence[p.CurrentQuestionIndex]
+	}
+	return PlayerQuestionState{
+		BattleStatus:         b.Status,
+		EndedAt:              b.EndedAt,
+		CurrentQuestionIndex: p.CurrentQuestionIndex,
+		QuestionCount:        len(m.sequence),
+		QuestionID:           qID,
+	}, nil
 }
 
 func (m *mockBattleRepository) GetQuestionIDAtSequenceIndex(ctx context.Context, battleID uuid.UUID, index int) (uuid.UUID, error) {
@@ -120,9 +192,32 @@ func (m *mockBattleRepository) GetQuestionIDAtSequenceIndex(ctx context.Context,
 	return m.sequence[index], nil
 }
 
-func (m *mockBattleRepository) CompleteBattle(ctx context.Context, battleID uuid.UUID) error {
+func (m *mockBattleRepository) GetBattlePlayersTx(ctx context.Context, tx pgx.Tx, battleID uuid.UUID) ([]BattlePlayer, error) {
+	var players []BattlePlayer
+	for _, p := range m.players {
+		if p.BattleID == battleID {
+			players = append(players, p)
+		}
+	}
+	if len(players) == 2 && players[0].UserID.String() > players[1].UserID.String() {
+		players[0], players[1] = players[1], players[0]
+	}
+	return players, nil
+}
+
+func (m *mockBattleRepository) UpdateBattlePlayerResult(ctx context.Context, tx pgx.Tx, battleID, userID uuid.UUID, result string) error {
+	return nil
+}
+
+func (m *mockBattleRepository) UpdateRoomStatusDirect(ctx context.Context, tx pgx.Tx, roomID uuid.UUID, status string) error {
+	return nil
+}
+
+func (m *mockBattleRepository) CompleteBattleWithResultTx(ctx context.Context, tx pgx.Tx, battleID uuid.UUID, winnerUserID *uuid.UUID, endedAt time.Time) error {
 	if m.battle.ID == battleID {
 		m.battle.Status = StatusCompleted
+		m.battle.WinnerUserID = winnerUserID
+		m.battle.EndedAt = &endedAt
 		return nil
 	}
 	return ErrNotFound
@@ -140,7 +235,9 @@ func TestBattleService_StartBattle(t *testing.T) {
 		},
 	}
 
-	service := NewService(repo, qs)
+	clock := &mockClock{now: time.Now()}
+	repo.clock = clock
+	service := NewService(repo, qs, clock, MVPScoreCalculator{})
 	ctx := context.Background()
 
 	roomID := uuid.New()
@@ -152,7 +249,7 @@ func TestBattleService_StartBattle(t *testing.T) {
 		{UserID: userID2, RatingBefore: 1300},
 	}
 
-	battleID, err := service.StartBattle(ctx, roomID, players, 42)
+	battleID, err := service.StartBattle(ctx, roomID, players, 42, 300)
 	if err != nil {
 		t.Fatalf("failed to start battle: %v", err)
 	}
@@ -184,17 +281,25 @@ func TestBattleService_SubmitAnswer_OptionCPolicy(t *testing.T) {
 
 	qs := &mockQuestionsService{
 		activeQuestions: []questions.Question{
-			{ID: q1, IsActive: true, QuestionType: questions.TypeMCQ},
-			{ID: q2, IsActive: true, QuestionType: questions.TypeMCQ},
+			{ID: q1, IsActive: true, QuestionType: questions.TypeMCQ, Difficulty: 2},
+			{ID: q2, IsActive: true, QuestionType: questions.TypeMCQ, Difficulty: 3},
 		},
 	}
 
-	service := NewService(repo, qs)
+	clock := &mockClock{now: time.Now()}
+	repo.clock = clock
+	service := NewService(repo, qs, clock, MVPScoreCalculator{})
 	ctx := context.Background()
 
 	// Initializing mock database rows
 	battleID := uuid.New()
-	repo.battle = Battle{ID: battleID, Status: StatusActive}
+	endedAt := clock.now.Add(300 * time.Second)
+	repo.battle = Battle{
+		ID:            battleID,
+		Status:        StatusActive,
+		EndedAt:       &endedAt,
+		QuestionCount: MaxQuestionStreamSize,
+	}
 	userID := uuid.New()
 	repo.players[userID] = BattlePlayer{
 		BattleID:                battleID,
@@ -207,9 +312,9 @@ func TestBattleService_SubmitAnswer_OptionCPolicy(t *testing.T) {
 	repo.sequence[0] = q1
 	repo.sequence[1] = q2
 
-	// 1. Submit incorrect answer on attempt 1
+	// 1. Submit incorrect answer on attempt 1 (Index = 1)
 	qs.validationMatch = false
-	res, err := service.SubmitAnswer(ctx, battleID, userID, questions.SubmissionAnswer{TextAnswer: "Wrong"}, 500)
+	res, err := service.SubmitAnswer(ctx, battleID, userID, 1, questions.SubmissionAnswer{TextAnswer: "Wrong"}, 500)
 	if err != nil {
 		t.Fatalf("unexpected submission error: %v", err)
 	}
@@ -222,8 +327,8 @@ func TestBattleService_SubmitAnswer_OptionCPolicy(t *testing.T) {
 		t.Errorf("expected index 0 and 1 attempt, got index %d, attempts %d, score %d", p.CurrentQuestionIndex, p.CurrentQuestionAttempts, p.Score)
 	}
 
-	// 2. Submit incorrect answer on attempt 2 (should skip)
-	res, err = service.SubmitAnswer(ctx, battleID, userID, questions.SubmissionAnswer{TextAnswer: "WrongAgain"}, 500)
+	// 2. Submit incorrect answer on attempt 2 (Index = 2) (should skip)
+	res, err = service.SubmitAnswer(ctx, battleID, userID, 2, questions.SubmissionAnswer{TextAnswer: "WrongAgain"}, 500)
 	if err != nil {
 		t.Fatalf("unexpected submission error: %v", err)
 	}
@@ -236,9 +341,9 @@ func TestBattleService_SubmitAnswer_OptionCPolicy(t *testing.T) {
 		t.Errorf("expected skip to index 1 and 0 attempts, got index %d, attempts %d, score %d", p.CurrentQuestionIndex, p.CurrentQuestionAttempts, p.Score)
 	}
 
-	// 3. Submit correct answer on next question (index 1)
+	// 3. Submit correct answer on next question (index 1) (Index = 3)
 	qs.validationMatch = true
-	res, err = service.SubmitAnswer(ctx, battleID, userID, questions.SubmissionAnswer{TextAnswer: "Right"}, 500)
+	res, err = service.SubmitAnswer(ctx, battleID, userID, 3, questions.SubmissionAnswer{TextAnswer: "Right"}, 500)
 	if err != nil {
 		t.Fatalf("unexpected submission error: %v", err)
 	}
@@ -256,16 +361,21 @@ func TestBattleService_SubmitAnswer_CompletedBattle(t *testing.T) {
 	repo := newMockBattleRepository()
 	qs := &mockQuestionsService{}
 
-	service := NewService(repo, qs)
+	clock := &RealClock{}
+	service := NewService(repo, qs, clock, MVPScoreCalculator{})
 	ctx := context.Background()
 
 	battleID := uuid.New()
 	repo.battle = Battle{ID: battleID, Status: StatusCompleted}
 	userID := uuid.New()
+	repo.players[userID] = BattlePlayer{
+		BattleID: battleID,
+		UserID:   userID,
+	}
 
-	_, err := service.SubmitAnswer(ctx, battleID, userID, questions.SubmissionAnswer{TextAnswer: "test"}, 100)
-	if err == nil {
-		t.Error("expected submission in completed battle to fail, got nil error")
+	_, err := service.SubmitAnswer(ctx, battleID, userID, 1, questions.SubmissionAnswer{TextAnswer: "test"}, 100)
+	if !errors.Is(err, ErrBattleFinished) {
+		t.Errorf("expected ErrBattleFinished, got: %v", err)
 	}
 }
 
@@ -277,7 +387,8 @@ func TestBattleService_StartBattleTx(t *testing.T) {
 			{ID: q1, IsActive: true},
 		},
 	}
-	service := NewService(repo, qs)
+	clock := &RealClock{}
+	service := NewService(repo, qs, clock, MVPScoreCalculator{})
 	ctx := context.Background()
 
 	roomID := uuid.New()
@@ -286,7 +397,7 @@ func TestBattleService_StartBattleTx(t *testing.T) {
 		{UserID: userID1, RatingBefore: 1200},
 	}
 
-	battleID, err := service.StartBattleTx(ctx, nil, roomID, players, 42)
+	battleID, err := service.StartBattleTx(ctx, nil, roomID, players, 42, 300)
 	if err != nil {
 		t.Fatalf("failed to start battle with tx: %v", err)
 	}
@@ -298,5 +409,163 @@ func TestBattleService_StartBattleTx(t *testing.T) {
 	}
 	if repo.battle.Status != StatusActive {
 		t.Errorf("expected battle status to be %s, got %s", StatusActive, repo.battle.Status)
+	}
+}
+
+func TestBattleService_SubmitAnswer_Expired(t *testing.T) {
+	repo := newMockBattleRepository()
+	q1 := uuid.New()
+
+	qs := &mockQuestionsService{
+		activeQuestions: []questions.Question{
+			{ID: q1, IsActive: true, QuestionType: questions.TypeMCQ},
+		},
+	}
+
+	clock := &mockClock{now: time.Now()}
+	repo.clock = clock
+	service := NewService(repo, qs, clock, MVPScoreCalculator{})
+	ctx := context.Background()
+
+	battleID := uuid.New()
+	endedAt := clock.now.Add(10 * time.Second)
+	repo.battle = Battle{
+		ID:            battleID,
+		Status:        StatusActive,
+		EndedAt:       &endedAt,
+		QuestionCount: 1,
+	}
+	userID := uuid.New()
+	repo.players[userID] = BattlePlayer{
+		BattleID:                battleID,
+		UserID:                  userID,
+		CurrentQuestionIndex:    0,
+		CurrentQuestionAttempts: 0,
+	}
+	repo.sequence = []uuid.UUID{q1}
+
+	// Advance clock past expiration
+	clock.now = clock.now.Add(15 * time.Second)
+
+	_, err := service.SubmitAnswer(ctx, battleID, userID, 1, questions.SubmissionAnswer{TextAnswer: "Right"}, 100)
+	if !errors.Is(err, ErrBattleExpired) {
+		t.Errorf("expected ErrBattleExpired, got: %v", err)
+	}
+}
+
+func TestBattleService_SubmitAnswer_Duplicate(t *testing.T) {
+	repo := newMockBattleRepository()
+	q1 := uuid.New()
+
+	qs := &mockQuestionsService{
+		activeQuestions: []questions.Question{
+			{ID: q1, IsActive: true, QuestionType: questions.TypeMCQ, Difficulty: 2},
+		},
+	}
+
+	clock := &mockClock{now: time.Now()}
+	repo.clock = clock
+	service := NewService(repo, qs, clock, MVPScoreCalculator{})
+	ctx := context.Background()
+
+	battleID := uuid.New()
+	endedAt := clock.now.Add(300 * time.Second)
+	repo.battle = Battle{
+		ID:            battleID,
+		Status:        StatusActive,
+		EndedAt:       &endedAt,
+		QuestionCount: 1,
+	}
+	userID := uuid.New()
+	repo.players[userID] = BattlePlayer{
+		BattleID:                battleID,
+		UserID:                  userID,
+		CurrentQuestionIndex:    0,
+		CurrentQuestionAttempts: 0,
+	}
+	repo.sequence = []uuid.UUID{q1}
+
+	// First submission (Expected = 1)
+	qs.validationMatch = false
+	_, err := service.SubmitAnswer(ctx, battleID, userID, 1, questions.SubmissionAnswer{TextAnswer: "Wrong"}, 100)
+	if err != nil {
+		t.Fatalf("unexpected error on first submit: %v", err)
+	}
+
+	// Try immediate submission of the same index/answer (Index = 1, expected = 2) (should fail due to index check)
+	_, err = service.SubmitAnswer(ctx, battleID, userID, 1, questions.SubmissionAnswer{TextAnswer: "Wrong"}, 100)
+	if !errors.Is(err, ErrDuplicateSubmission) {
+		t.Errorf("expected ErrDuplicateSubmission (index check), got: %v", err)
+	}
+
+	// Submit correct index (Index = 2) but with the exact same answer (should fail due to same answer check)
+	_, err = service.SubmitAnswer(ctx, battleID, userID, 2, questions.SubmissionAnswer{TextAnswer: "Wrong"}, 100)
+	if !errors.Is(err, ErrDuplicateSubmission) {
+		t.Errorf("expected ErrDuplicateSubmission (same answer check), got: %v", err)
+	}
+
+	// Submit a different answer (Index = 2)
+	_, err = service.SubmitAnswer(ctx, battleID, userID, 2, questions.SubmissionAnswer{TextAnswer: "AnotherWrong"}, 100)
+	if err != nil {
+		t.Errorf("expected success for different answer, got error: %v", err)
+	}
+}
+
+func TestBattleService_SubmitAnswer_Invalid(t *testing.T) {
+	repo := newMockBattleRepository()
+	service := NewService(repo, &mockQuestionsService{}, &RealClock{}, MVPScoreCalculator{})
+	ctx := context.Background()
+
+	_, err := service.SubmitAnswer(ctx, uuid.New(), uuid.New(), 1, questions.SubmissionAnswer{}, 100)
+	if !errors.Is(err, ErrInvalidSubmission) {
+		t.Errorf("expected ErrInvalidSubmission, got: %v", err)
+	}
+}
+
+func TestBattleService_CompleteBattle(t *testing.T) {
+	repo := newMockBattleRepository()
+	clock := &mockClock{now: time.Now()}
+	service := NewService(repo, &mockQuestionsService{}, clock, MVPScoreCalculator{})
+	ctx := context.Background()
+
+	battleID := uuid.New()
+	roomID := uuid.New()
+	repo.battle = Battle{
+		ID:     battleID,
+		RoomID: roomID,
+		Status: StatusActive,
+	}
+
+	userID1 := uuid.New()
+	userID2 := uuid.New()
+
+	repo.players[userID1] = BattlePlayer{
+		BattleID: battleID,
+		UserID:   userID1,
+		Score:    5,
+	}
+	repo.players[userID2] = BattlePlayer{
+		BattleID: battleID,
+		UserID:   userID2,
+		Score:    3,
+	}
+
+	// First complete call
+	err := service.CompleteBattle(ctx, battleID)
+	if err != nil {
+		t.Fatalf("failed to complete battle: %v", err)
+	}
+
+	if repo.battle.Status != StatusCompleted {
+		t.Errorf("expected status to be completed, got %v", repo.battle.Status)
+	}
+	if repo.battle.WinnerUserID == nil || *repo.battle.WinnerUserID != userID1 {
+		t.Errorf("expected winner to be user 1 (%s), got: %v", userID1, repo.battle.WinnerUserID)
+	}
+
+	// Idempotent secondary call
+	err = service.CompleteBattle(ctx, battleID)
+	if err != nil {
+		t.Fatalf("failed to complete battle idempotently: %v", err)
 	}
 }

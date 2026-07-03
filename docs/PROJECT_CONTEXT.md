@@ -2,6 +2,9 @@
 
 DSAblitz is a real-time 1v1 DSA battle platform.
 
+> [!IMPORTANT]
+> **Living Documentation Policy**: Documentation is a living artifact and must evolve alongside the code. Every completed phase must update architecture, roadmap, ADRs, interview notes, and deep dives before the phase is considered complete.
+
 ## Gameplay
 - Players compete in 1v1 battles
 - Match duration: 5 min or 10 min
@@ -50,6 +53,10 @@ Modular Monolith.
 
 ### **Concurrency & Locking**
 * Player progression updates are secured using pessimistic row locking (`SELECT ... FOR UPDATE` on `battle_players`) within atomic transactions to prevent duplicate submissions or score tampering.
+* **Monotonic Submission Index**: Duplicate and out-of-order submissions are prevented by verifying a client-supplied monotonic submission index (`submissionIndex`) against the player's server-computed expected index ($\text{correct\_count} + \text{incorrect\_count} + 1$) inside the locked transaction.
+* **Configurable Scoring**: The engine delegates score calculations to an injected `ScoreCalculator` interface, allowing V2 to support difficulty-based scoring, streak bonuses, and penalties without altering the core submission engine.
+* **Optimized Question Retrieval**: Retrieving a player's current question joins `battle_players`, `battles`, and `battle_question_sequence` in a single database query to minimize network roundtrips.
+* **Idempotent Battle Completion**: Battle completion uses a service-managed transaction that locks the battle row and updates the status exactly once, computing the winner and releasing locked resources safely.
 
 ### **Global Lock Ordering Rule**
 * Any transaction spanning multiple tables must acquire row locks in this exact hierarchy to prevent deadlocks: `rooms` -> `room_players` -> `battles` -> `battle_players` -> `battle_question_sequence`.

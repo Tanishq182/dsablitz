@@ -19,17 +19,31 @@ const (
 	StatusAborted   BattleStatus = "aborted"
 )
 
+// Typed domain errors for the Battle module
+var (
+	ErrBattleExpired       = errors.New("battle has expired")
+	ErrBattleFinished      = errors.New("battle is already finished")
+	ErrDuplicateSubmission = errors.New("duplicate submission detected")
+	ErrInvalidSubmission   = errors.New("invalid submission")
+	ErrQuestionExhausted   = errors.New("all questions in the stream have been exhausted")
+)
+
 // MaxQuestionStreamSize defines the maximum number of pre-generated questions in a stream.
 const MaxQuestionStreamSize = 200
 
 // Battle represents the battle entity stored in the database.
 type Battle struct {
-	ID         uuid.UUID    `db:"id"`
-	RoomID     uuid.UUID    `db:"room_id"`
-	Status     BattleStatus `db:"status"`
-	BattleSeed int64        `db:"battle_seed"`
-	CreatedAt  time.Time    `db:"created_at"`
-	UpdatedAt  time.Time    `db:"updated_at"`
+	ID              uuid.UUID    `db:"id"`
+	RoomID          uuid.UUID    `db:"room_id"`
+	Status          BattleStatus `db:"status"`
+	DurationSeconds int          `db:"duration_seconds"`
+	QuestionCount   int          `db:"question_count"`
+	WinnerUserID    *uuid.UUID   `db:"winner_user_id"`
+	StartedAt       *time.Time   `db:"started_at"`
+	EndedAt         *time.Time   `db:"ended_at"`
+	BattleSeed      int64        `db:"battle_seed"`
+	CreatedAt       time.Time    `db:"created_at"`
+	UpdatedAt       time.Time    `db:"updated_at"`
 }
 
 // Validate checks core structural invariants for a Battle.
@@ -102,4 +116,13 @@ type SubmissionResult struct {
 	CurrentQuestionIndex int       `json:"current_question_index"`
 	Score                int       `json:"score"`
 	QuestionID           uuid.UUID `json:"question_id"`
+}
+
+// PlayerQuestionState represents the player's active question details and battle status.
+type PlayerQuestionState struct {
+	BattleStatus         BattleStatus
+	EndedAt              *time.Time
+	CurrentQuestionIndex int
+	QuestionCount        int
+	QuestionID           uuid.UUID
 }

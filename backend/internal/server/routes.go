@@ -31,7 +31,7 @@ func (a *battleCoordinatorAdapter) StartBattle(ctx context.Context, tx pgx.Tx, r
 			RatingBefore: p.RatingBefore,
 		}
 	}
-	return a.battleService.StartBattleTx(ctx, tx, roomID, battlePlayers, seed)
+	return a.battleService.StartBattleTx(ctx, tx, roomID, battlePlayers, seed, 300)
 }
 
 func registerRoutes(router *gin.Engine, config configs.Config, db *database.Manager) error {
@@ -53,7 +53,7 @@ func registerRoutes(router *gin.Engine, config configs.Config, db *database.Mana
 
 	// 2. Initialize Battle Module
 	battleRepo := battle.NewRepository(db.Pool())
-	battleService := battle.NewService(battleRepo, questionsService)
+	battleService := battle.NewService(battleRepo, questionsService, battle.RealClock{}, battle.MVPScoreCalculator{})
 	battle.RegisterRoutes(api.Group("/battle"))
 
 	// 3. Initialize Rooms Module with BattleCoordinator dependency inversion
