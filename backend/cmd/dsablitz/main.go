@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"os/signal"
 	"syscall"
@@ -10,6 +11,7 @@ import (
 	"dsablitz/backend/configs"
 	"dsablitz/backend/internal/platform/cache"
 	"dsablitz/backend/internal/platform/database"
+	"dsablitz/backend/internal/questions"
 	"dsablitz/backend/internal/server"
 )
 
@@ -21,6 +23,9 @@ const (
 func main() {
 	cfg := configs.Load()
 
+	seedFlag := flag.Bool("seed", false, "Seed the database with question bank and exit")
+	flag.Parse()
+
 	startupCtx, cancelStartup := context.WithTimeout(context.Background(), startupTimeout)
 	defer cancelStartup()
 
@@ -29,6 +34,17 @@ func main() {
 		log.Fatalf("database connection failed: %v", err)
 	}
 	defer db.Close()
+
+	if *seedFlag {
+		log.Println("Starting question database seeding...")
+		repo := questions.NewRepository(db.Pool())
+		count, err := questions.SeedQuestions(context.Background(), repo, "internal/questions/seeds/questions.json")
+		if err != nil {
+			log.Fatalf("seeding failed: %v", err)
+		}
+		log.Printf("Successfully seeded %d questions. Exiting.", count)
+		return
+	}
 
 	redisClient, err := cache.Connect(startupCtx, cfg.RedisURL)
 	if err != nil {
