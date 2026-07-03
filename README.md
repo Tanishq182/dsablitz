@@ -1,6 +1,7 @@
 <p align="center">
   <img src="assets/dsablitz_banner.png" alt="DSABlitz Banner" width="100%">
 </p>
+
 # 🚀 DSAblitz
 
 > A production-oriented real-time competitive coding platform built with Go.
