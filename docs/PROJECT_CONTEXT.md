@@ -102,7 +102,13 @@ Modular Monolith.
 - Phase 4A Auth Design ✅
 - Phase 4B Auth Implementation ✅
 - Phase 4C Auth Hardening ⏳ Deferred
-- Phase 5 Questions & Battle MVP ✅ (Audit items fully implemented)
+- Phase 5 Questions & Battle MVP ✅
 - Phase 6 Rooms Lifecycle ⏳ Deferred
-- Phase 7 Battle Engine 🎯 Next Phase
-- Phase 8 Friends/Social
+- Phase 7 Battle Engine & APIs ✅
+- Phase 8 Ratings, Statistics, Battle History, and Leaderboards (Milestone 2) 🎯
+  - Phase 8A: Standalone Ratings Module & Elo Engine ✅
+  - Phase 8B: Battle Result Processing ⏳ Next Step
+  - Phase 8C: User Stats & Identity Endpoints ⏳
+  - Phase 8D: Battle History & Replays ⏳
+  - Phase 8E: Dynamic SQL Leaderboards ⏳
+  - Phase 8F: Production Hardening ⏳
