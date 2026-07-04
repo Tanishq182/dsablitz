@@ -27,6 +27,9 @@ The following capabilities are fully implemented, tested, and integrated into th
 ### 4. Background Expiration & Timers (Phase 7B)
 * **Active Expiration Handlers**: A centralized background cleanup runner executing periodic checks to expire idle lobbies ([rooms/service.go](file:///home/tanishq/dsablitz/backend/internal/rooms/service.go#L427)) and automatically finalize active battles when their duration timer expires ([battle/service.go](file:///home/tanishq/dsablitz/backend/internal/battle/service.go#L418)).
 
+### 5. Public Gameplay REST APIs (Phase 7C)
+* **REST Endpoints**: Exposes endpoints for active matches (`GET /api/v1/battle/:id/question` and `POST /api/v1/battle/:id/submit`) mapped to JWT-protected user sessions with mapping of Go errors to HTTP status codes.
+
 ---
 
 ## Planned Work (V2)

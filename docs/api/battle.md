@@ -6,10 +6,50 @@ This document provides technical documentation for the Battle Engine's interface
 
 ## 1. Current HTTP API Surface (Current MVP)
 
-> [!IMPORTANT]
-> **No Public HTTP Routes**: The Battle module currently has **zero** public HTTP REST or WebSocket endpoints exposed to clients in the delivery layer ([battle/routes.go](file:///home/tanishq/dsablitz/backend/internal/battle/routes.go)). 
+All battle engine endpoints are prefixed with the base path: `/api/v1/battle`
 
-Any external client attempt to request battle endpoints directly will result in a `404 Not Found` from the Gin gateway, as no routes are registered.
+All endpoints require authentication via the `access_token` cookie (verified by the Gin JWT middleware).
+
+### 1.1 `GET /:id/question`
+Exposes the internal `GetNextQuestion` logic via HTTP.
+*   **Headers**: Requires `access_token` cookie.
+*   **Response Schema** (Status `200 OK`):
+    ```json
+    {
+      "id": "278c5c7d-8153-43ef-ad99-231a7bc89d2d",
+      "question_type": "mcq",
+      "difficulty": 3,
+      "title": "Reverse Linked List",
+      "prompt": "Write a function to reverse a singly linked list.",
+      "options": ["O(1) space", "O(N) space", "O(log N) space"],
+      "time_limit_sec": 60,
+      "tags": ["linked-list", "pointers"]
+    }
+    ```
+
+### 1.2 `POST /:id/submit`
+Exposes the internal `SubmitAnswer` logic via HTTP.
+*   **Headers**: Requires `access_token` cookie.
+*   **Request Schema**:
+    ```json
+    {
+      "submission_index": 1,
+      "answer": {
+        "text_answer": "O(1) space"
+      },
+      "response_time_ms": 1450
+    }
+    ```
+*   **Response Schema** (Status `200 OK`):
+    ```json
+    {
+      "is_correct": true,
+      "attempts_made": 1,
+      "current_question_index": 1,
+      "score": 1,
+      "question_id": "90d1f4ba-d4f1-4dfb-90cb-ec65d4b5a2bf"
+    }
+    ```
 
 ---
 
@@ -82,59 +122,18 @@ Scans for active battles that have exceeded their ended time and triggers standa
 
 ---
 
+## 3. Planned WebSocket API (V2 / Phase 7D)
 
-## 3. Planned REST API (V2 / Phase 7C)
-
-These endpoints are planned for Phase 7C to expose the internal Go service methods as public REST APIs.
-
-### 3.1 `GET /api/v1/battle/:id/question`
-Exposes `GetNextQuestion` via HTTP.
-*   **Headers**: Requires `access_token` cookie.
-*   **Response Schema** (Status `200 OK`):
-    ```json
-    {
-      "id": "278c5c7d-8153-43ef-ad99-231a7bc89d2d",
-      "question_type": "mcq",
-      "difficulty": 3,
-      "title": "Reverse Linked List",
-      "prompt": "Write a function to reverse a singly linked list.",
-      "options": ["O(1) space", "O(N) space", "O(log N) space"],
-      "time_limit_sec": 60,
-      "tags": ["linked-list", "pointers"]
-    }
-    ```
-
-### 3.2 `POST /api/v1/battle/:id/submit`
-Exposes `SubmitAnswer` via HTTP.
-*   **Headers**: Requires `access_token` cookie.
-*   **Request Schema**:
-    ```json
-    {
-      "submission_index": 1,
-      "answer": {
-        "text_answer": "O(1) space"
-      },
-      "response_time_ms": 1450
-    }
-    ```
-*   **Response Schema** (Status `200 OK`):
-    ```json
-    {
-      "is_correct": true,
-      "attempts_made": 1,
-      "current_question_index": 1,
-      "score": 1,
-      "question_id": "90d1f4ba-d4f1-4dfb-90cb-ec65d4b5a2bf"
-    }
-    ```
+These endpoints are planned for Phase 7D to stream real-time events.
+*   **WebSocket State Push**: Real-time push notifications of question and timer transitions.
 
 ---
 
 ## 4. Error Invariants
 
-The internal service methods throw typed Go errors when invariants are violated, which will map to HTTP status codes in V2:
+The internal service methods throw typed Go errors when invariants are violated, which map to HTTP status codes on the REST API:
 
-| Go Error Constant | Triggering Condition | Planned V2 HTTP Code |
+| Go Error Constant | Triggering Condition | REST HTTP Status Code |
 | :--- | :--- | :--- |
 | `ErrBattleFinished` | Submitting or querying a finished battle | `409 Conflict` |
 | `ErrBattleExpired` | Action performed after match duration elapsed | `410 Gone` |
