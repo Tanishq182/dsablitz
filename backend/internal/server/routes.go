@@ -54,20 +54,20 @@ func registerRoutes(router *gin.Engine, config configs.Config, db *database.Mana
 	// 2. Initialize Battle Module
 	battleRepo := battle.NewRepository(db.Pool())
 	battleService := battle.NewService(battleRepo, questionsService, battle.RealClock{}, battle.MVPScoreCalculator{})
-	battle.RegisterRoutes(api.Group("/battle"))
 
 	// 3. Initialize Rooms Module with BattleCoordinator dependency inversion
 	roomsRepo := rooms.NewRepository(db.Pool())
 	battleAdapter := &battleCoordinatorAdapter{battleService: battleService}
 	roomsService := rooms.NewService(roomsRepo, battleAdapter)
 
-	// Auth token manager and middleware for rooms
+	// Auth token manager and middleware for rooms and battle
 	tokens, err := auth.NewTokenManager(config.JWTSecret)
 	if err != nil {
 		return nil, nil, fmt.Errorf("auth token manager initialization: %w", err)
 	}
 	authMiddleware := auth.JWTMiddleware(tokens)
 
+	battle.RegisterRoutes(api.Group("/battle"), battleService, authMiddleware)
 	rooms.RegisterRoutes(api.Group("/rooms"), roomsService, authMiddleware)
 
 	return roomsService, battleService, nil
