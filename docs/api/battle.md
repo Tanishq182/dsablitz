@@ -73,7 +73,15 @@ Concludes a match, determines the outcome, and updates player results.
     func (s *Service) CompleteBattle(ctx context.Context, battleID uuid.UUID) error
     ```
 
+### 2.5 `ExpireActiveBattles`
+Scans for active battles that have exceeded their ended time and triggers standard completion.
+*   **Go Signature** ([service.go:L418](file:///home/tanishq/dsablitz/backend/internal/battle/service.go#L418)):
+    ```go
+    func (s *Service) ExpireActiveBattles(ctx context.Context) (int, error)
+    ```
+
 ---
+
 
 ## 3. Planned REST API (V2 / Phase 7C)
 
@@ -158,7 +166,26 @@ The internal service methods throw typed Go errors when invariants are violated,
 
 ---
 
-## 8. Code References
+## 8. Timer Enforcement Strategy
+
+The Battle timer enforces the match lifecycle using a double-layered approach:
+
+### 8.1 Primary Timer Enforcement (Gameplay Request Path)
+- **Mechanics**: Every gameplay request ([SubmitAnswer](file:///home/tanishq/dsablitz/backend/internal/battle/service.go#L187) and [GetNextQuestion](file:///home/tanishq/dsablitz/backend/internal/battle/service.go#L159)) checks whether the battle's `ended_at` timestamp has passed before performing any transaction updates.
+- **Action on Expiry**: If the current system clock time is greater than or equal to `ended_at`:
+  1. The API triggers the idempotent `CompleteBattle` service flow.
+  2. The database updates the battle status to `finished`.
+  3. The request rejects further actions by returning `ErrBattleExpired`.
+- **Why this design?**: Keeps the request lifecycle authoritative. The database transitions state immediately when players interact with the system, preventing delayed completions and preventing players from submitting answers after their timers expire.
+
+### 8.2 Secondary Timer Enforcement (Background Cleanup Worker)
+- **Mechanics**: A background cleanup routine (`startCleanupWorkers` in [server.go](file:///home/tanishq/dsablitz/backend/internal/server/server.go#L48)) executes every 5 seconds.
+- **Action on Expiry**: Queries the database for active battles that have expired but haven't received any recent requests (abandoned matches). It calls `CompleteBattle` to release lock resources, calculate ratings, and reset room states.
+- **Why this design?**: Serves only as a safety net. It frees server and database resources for abandoned games without being relied upon for request-level timer enforcement.
+
+---
+
+## 9. Code References
 
 - **Battle Service Layer**: [battle/service.go](file:///home/tanishq/dsablitz/backend/internal/battle/service.go)
 - **Scorecard locking SQL**: [battle/repository.go:L119-L128](file:///home/tanishq/dsablitz/backend/internal/battle/repository.go#L119-L128)
@@ -166,7 +193,7 @@ The internal service methods throw typed Go errors when invariants are violated,
 
 ---
 
-## 9. Related Documents
+## 10. Related Documents
 
 - **Database Transactions**: [transactions.md](file:///home/tanishq/dsablitz/docs/database/transactions.md)
 - **Submission Flow Deep Dive**: [submission_flow.md](file:///home/tanishq/dsablitz/docs/flows/submission_flow.md)

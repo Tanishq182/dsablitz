@@ -355,3 +355,30 @@ func (r *Repository) CompleteBattleWithResultTx(ctx context.Context, tx pgx.Tx, 
 	}
 	return nil
 }
+
+// GetExpiredActiveBattles returns all battle IDs in 'active' status where ended_at has passed.
+func (r *Repository) GetExpiredActiveBattles(ctx context.Context, now time.Time) ([]uuid.UUID, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id FROM battles
+		WHERE status = $1 AND ended_at < $2
+		ORDER BY id ASC
+	`, StatusActive, now)
+	if err != nil {
+		return nil, fmt.Errorf("query expired active battles: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan expired battle id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows iteration: %w", err)
+	}
+	return ids, nil
+}
+

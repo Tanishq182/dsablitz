@@ -223,6 +223,15 @@ func (m *mockBattleRepository) CompleteBattleWithResultTx(ctx context.Context, t
 	return ErrNotFound
 }
 
+func (m *mockBattleRepository) GetExpiredActiveBattles(ctx context.Context, now time.Time) ([]uuid.UUID, error) {
+	var ids []uuid.UUID
+	if m.battle.Status == StatusActive && m.battle.EndedAt != nil && m.battle.EndedAt.Before(now) {
+		ids = append(ids, m.battle.ID)
+	}
+	return ids, nil
+}
+
+
 func TestBattleService_StartBattle(t *testing.T) {
 	repo := newMockBattleRepository()
 	q1 := uuid.New()
@@ -569,3 +578,48 @@ func TestBattleService_CompleteBattle(t *testing.T) {
 		t.Fatalf("failed to complete battle idempotently: %v", err)
 	}
 }
+
+func TestBattleService_ExpireActiveBattles(t *testing.T) {
+	repo := newMockBattleRepository()
+	now := time.Now()
+	clock := &mockClock{now: now}
+	service := NewService(repo, &mockQuestionsService{}, clock, MVPScoreCalculator{})
+	ctx := context.Background()
+
+	battleID := uuid.New()
+	roomID := uuid.New()
+	endedAt := now.Add(-5 * time.Minute)
+	repo.battle = Battle {
+		ID:     battleID,
+		RoomID: roomID,
+		Status: StatusActive,
+		EndedAt: &endedAt,
+	}
+
+	userID1 := uuid.New()
+	userID2 := uuid.New()
+	repo.players[userID1] = BattlePlayer{
+		BattleID: battleID,
+		UserID:   userID1,
+		Score:    5,
+	}
+	repo.players[userID2] = BattlePlayer{
+		BattleID: battleID,
+		UserID:   userID2,
+		Score:    3,
+	}
+
+	count, err := service.ExpireActiveBattles(ctx)
+	if err != nil {
+		t.Fatalf("failed to expire active battles: %v", err)
+	}
+
+	if count != 1 {
+		t.Errorf("expected 1 expired battle, got: %d", count)
+	}
+
+	if repo.battle.Status != StatusCompleted {
+		t.Errorf("expected battle status to transition to completed, got: %v", repo.battle.Status)
+	}
+}
+

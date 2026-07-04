@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"time"
 
@@ -67,6 +68,7 @@ type BattleRepository interface {
 	UpdateBattlePlayerResult(ctx context.Context, tx pgx.Tx, battleID, userID uuid.UUID, result string) error
 	UpdateRoomStatusDirect(ctx context.Context, tx pgx.Tx, roomID uuid.UUID, status string) error
 	CompleteBattleWithResultTx(ctx context.Context, tx pgx.Tx, battleID uuid.UUID, winnerUserID *uuid.UUID, endedAt time.Time) error
+	GetExpiredActiveBattles(ctx context.Context, now time.Time) ([]uuid.UUID, error)
 }
 
 type Service struct {
@@ -153,6 +155,22 @@ func (s *Service) StartBattleTx(ctx context.Context, tx pgx.Tx, roomID uuid.UUID
 	return battleID, nil
 }
 
+func (s *Service) checkBattleActive(ctx context.Context, battleID uuid.UUID, status BattleStatus, endedAt *time.Time, completeOnExpiry bool) error {
+	if status == StatusCompleted {
+		return ErrBattleFinished
+	}
+	if status != StatusActive {
+		return fmt.Errorf("battle status is %s", status)
+	}
+	if endedAt != nil && !s.clock.Now().Before(*endedAt) {
+		if completeOnExpiry {
+			_ = s.CompleteBattle(ctx, battleID)
+		}
+		return ErrBattleExpired
+	}
+	return nil
+}
+
 // GetNextQuestion resolves a player's progress pointer and returns the next sanitized question.
 func (s *Service) GetNextQuestion(ctx context.Context, battleID, userID uuid.UUID) (questions.SanitizedQuestionResponse, error) {
 	state, err := s.repo.GetPlayerQuestionState(ctx, battleID, userID)
@@ -163,14 +181,8 @@ func (s *Service) GetNextQuestion(ctx context.Context, battleID, userID uuid.UUI
 		return questions.SanitizedQuestionResponse{}, fmt.Errorf("get player question state: %w", err)
 	}
 
-	if state.BattleStatus == StatusCompleted {
-		return questions.SanitizedQuestionResponse{}, ErrBattleFinished
-	}
-	if state.BattleStatus != StatusActive {
-		return questions.SanitizedQuestionResponse{}, fmt.Errorf("battle status is %s", state.BattleStatus)
-	}
-	if state.EndedAt != nil && !s.clock.Now().Before(*state.EndedAt) {
-		return questions.SanitizedQuestionResponse{}, ErrBattleExpired
+	if err := s.checkBattleActive(ctx, battleID, state.BattleStatus, state.EndedAt, true); err != nil {
+		return questions.SanitizedQuestionResponse{}, err
 	}
 
 	if state.CurrentQuestionIndex >= state.QuestionCount || state.QuestionID == uuid.Nil {
@@ -187,9 +199,17 @@ func (s *Service) SubmitAnswer(ctx context.Context, battleID, userID uuid.UUID, 
 		return SubmissionResult{}, ErrInvalidSubmission
 	}
 
+	// 1. Fast read-only check before transaction to avoid unnecessary locking if already completed or expired
+	b, err := s.repo.GetBattle(ctx, battleID)
+	if err == nil {
+		if err := s.checkBattleActive(ctx, battleID, b.Status, b.EndedAt, true); err != nil {
+			return SubmissionResult{}, err
+		}
+	}
+
 	var result SubmissionResult
 
-	err := s.repo.WithTransaction(ctx, func(tx pgx.Tx) error {
+	err = s.repo.WithTransaction(ctx, func(tx pgx.Tx) error {
 		// 1. Lock single player progress row pessimistic serialization
 		player, err := s.repo.GetBattlePlayerForUpdate(ctx, tx, battleID, userID)
 		if err != nil {
@@ -203,14 +223,8 @@ func (s *Service) SubmitAnswer(ctx context.Context, battleID, userID uuid.UUID, 
 		}
 
 		// 3. Check expiration
-		if b.Status == StatusCompleted {
-			return ErrBattleFinished
-		}
-		if b.Status != StatusActive {
-			return fmt.Errorf("cannot submit: battle status is %s", b.Status)
-		}
-		if b.EndedAt != nil && !s.clock.Now().Before(*b.EndedAt) {
-			return ErrBattleExpired
+		if err := s.checkBattleActive(ctx, battleID, b.Status, b.EndedAt, false); err != nil {
+			return err
 		}
 
 		// 4. Resolve current question
@@ -246,57 +260,64 @@ func (s *Service) SubmitAnswer(ctx context.Context, battleID, userID uuid.UUID, 
 		// Fetch question details for difficulty (safe, server-side only)
 		q, err := s.questionsService.GetSanitizedQuestion(ctx, qID)
 		if err != nil {
-			return fmt.Errorf("fetch question details: %w", err)
+			return fmt.Errorf("get sanitized question: %w", err)
 		}
 
-		// 6. Validate answer (stateless)
+		// Stateless evaluation
 		isCorrect, err := s.questionsService.ValidateAnswer(ctx, qID, answer)
 		if err != nil {
-			return fmt.Errorf("stateless validation query: %w", err)
+			return fmt.Errorf("validate answer: %w", err)
 		}
+
 		result.IsCorrect = isCorrect
 
-		// 7. Update attempts & score (Option C Rule)
-		pointsEarned := 0
+		// Apply Option C progression policy
 		if isCorrect {
-			pointsEarned = s.scoreCalculator.Calculate(true, player.CurrentQuestionAttempts, q.Difficulty)
-			player.Score += pointsEarned
+			scoreAwarded := s.scoreCalculator.Calculate(true, int(player.CurrentQuestionAttempts)+1, int(q.Difficulty))
+			player.Score += scoreAwarded
 			player.CorrectCount++
 			player.CurrentQuestionIndex++
 			player.CurrentQuestionAttempts = 0
+			result.Score = player.Score
 		} else {
 			player.IncorrectCount++
 			player.CurrentQuestionAttempts++
 			if player.CurrentQuestionAttempts >= 2 {
+				// Skip question
 				player.CurrentQuestionIndex++
 				player.CurrentQuestionAttempts = 0
 			}
+			result.Score = int(player.Score)
 		}
 
-		result.AttemptsMade = player.CurrentQuestionAttempts
-		result.CurrentQuestionIndex = player.CurrentQuestionIndex
-		result.Score = player.Score
+		result.AttemptsMade = int(player.CurrentQuestionAttempts)
+		result.CurrentQuestionIndex = int(player.CurrentQuestionIndex)
 
-		// 8. Insert submission
-		err = s.repo.InsertSubmission(ctx, tx, battleID, userID, qID, answer, isCorrect, pointsEarned, responseTimeMs)
+		// Log submission
+		scoreAwarded := 0
+		if isCorrect {
+			scoreAwarded = s.scoreCalculator.Calculate(true, int(player.CurrentQuestionAttempts), int(q.Difficulty))
+		}
+		err = s.repo.InsertSubmission(ctx, tx, battleID, userID, qID, answer, isCorrect, scoreAwarded, responseTimeMs)
 		if err != nil {
-			return fmt.Errorf("insert submission: %w", err)
+			return fmt.Errorf("log submission: %w", err)
 		}
 
-		// 9. Persist counters
+		// Update scorecard
 		err = s.repo.UpdateBattlePlayer(ctx, tx, player)
 		if err != nil {
-			return fmt.Errorf("update player stats: %w", err)
+			return fmt.Errorf("update battle player: %w", err)
 		}
 
 		return nil
 	})
 
-	if err != nil {
-		return SubmissionResult{}, err
+	if errors.Is(err, ErrBattleExpired) {
+		_ = s.CompleteBattle(ctx, battleID)
+		return SubmissionResult{}, ErrBattleExpired
 	}
 
-	return result, nil
+	return result, err
 }
 
 // CompleteBattle transitions battle status to completed inside a transaction context.
@@ -315,6 +336,15 @@ func (s *Service) CompleteBattle(ctx context.Context, battleID uuid.UUID) error 
 		players, err := s.repo.GetBattlePlayersTx(ctx, tx, battleID)
 		if err != nil {
 			return fmt.Errorf("load battle players tx: %w", err)
+		}
+
+		// Re-read battle status after locking players to ensure idempotency under concurrency
+		b, err = s.repo.GetBattleTx(ctx, tx, battleID)
+		if err != nil {
+			return fmt.Errorf("re-read battle tx: %w", err)
+		}
+		if b.Status == StatusCompleted {
+			return nil // Idempotent noop
 		}
 
 		// 3. Determine winner based on score
@@ -411,3 +441,25 @@ func answersEqual(a, b questions.SubmissionAnswer) bool {
 	}
 	return true
 }
+
+// ExpireActiveBattles scans and completes all expired battles.
+func (s *Service) ExpireActiveBattles(ctx context.Context) (int, error) {
+	now := s.clock.Now()
+	ids, err := s.repo.GetExpiredActiveBattles(ctx, now)
+	if err != nil {
+		return 0, fmt.Errorf("get expired active battles: %w", err)
+	}
+
+	var count int
+	for _, id := range ids {
+		if err := s.CompleteBattle(ctx, id); err != nil {
+			// Log the error and continue to avoid blocking other expirations
+			log.Printf("Failed to complete expired battle %s: %v", id, err)
+			continue
+		}
+		count++
+	}
+
+	return count, nil
+}
+

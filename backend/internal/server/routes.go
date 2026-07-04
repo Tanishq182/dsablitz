@@ -34,12 +34,12 @@ func (a *battleCoordinatorAdapter) StartBattle(ctx context.Context, tx pgx.Tx, r
 	return a.battleService.StartBattleTx(ctx, tx, roomID, battlePlayers, seed, 300)
 }
 
-func registerRoutes(router *gin.Engine, config configs.Config, db *database.Manager) error {
+func registerRoutes(router *gin.Engine, config configs.Config, db *database.Manager) (*rooms.Service, *battle.Service, error) {
 	router.GET("/health", healthHandler)
 
 	api := router.Group("/api/v1")
 	if err := auth.RegisterRoutes(api.Group("/auth"), config, db); err != nil {
-		return err
+		return nil, nil, err
 	}
 	users.RegisterRoutes(api.Group("/users"))
 
@@ -47,7 +47,7 @@ func registerRoutes(router *gin.Engine, config configs.Config, db *database.Mana
 	questionsRepo := questions.NewRepository(db.Pool())
 	questionsService := questions.NewService(questionsRepo)
 	if err := questionsService.LoadCache(context.Background()); err != nil {
-		return fmt.Errorf("failed to load questions cache: %w", err)
+		return nil, nil, fmt.Errorf("failed to load questions cache: %w", err)
 	}
 	questions.RegisterRoutes(api.Group("/questions"))
 
@@ -64,13 +64,13 @@ func registerRoutes(router *gin.Engine, config configs.Config, db *database.Mana
 	// Auth token manager and middleware for rooms
 	tokens, err := auth.NewTokenManager(config.JWTSecret)
 	if err != nil {
-		return fmt.Errorf("auth token manager initialization: %w", err)
+		return nil, nil, fmt.Errorf("auth token manager initialization: %w", err)
 	}
 	authMiddleware := auth.JWTMiddleware(tokens)
 
 	rooms.RegisterRoutes(api.Group("/rooms"), roomsService, authMiddleware)
 
-	return nil
+	return roomsService, battleService, nil
 }
 
 func healthHandler(ctx *gin.Context) {

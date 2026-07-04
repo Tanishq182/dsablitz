@@ -24,14 +24,16 @@ The following capabilities are fully implemented, tested, and integrated into th
 * **Monotonic Submission Counter**: Rejection of duplicate or out-of-order answers based on transaction-verified submission counts ([service.go](file:///home/tanishq/dsablitz/backend/internal/battle/service.go#L228)).
 * **Configurable Scoring**: Injection of `ScoreCalculator` wrappers allowing basic or advanced scoring logic ([service.go](file:///home/tanishq/dsablitz/backend/internal/battle/service.go#L28)).
 
+### 4. Background Expiration & Timers (Phase 7B)
+* **Active Expiration Handlers**: A centralized background cleanup runner executing periodic checks to expire idle lobbies ([rooms/service.go](file:///home/tanishq/dsablitz/backend/internal/rooms/service.go#L427)) and automatically finalize active battles when their duration timer expires ([battle/service.go](file:///home/tanishq/dsablitz/backend/internal/battle/service.go#L418)).
+
 ---
 
 ## Planned Work (V2)
 
 The following components are scheduled for future development phases and are **not** currently implemented in the codebase:
 
-### 1. Elaboration of Battle Lifecycle
-* **Active Expiration Handlers**: Integration of a scheduler system to run `CompleteBattle` automatically when `EndedAt` is reached, even if players are idle.
+### 1. Elaborations of Battle Lifecycle
 * **Websocket State Push**: Real-time push notifications of question and timer transitions.
 
 ### 2. Rating & Statistics (Phase 8)
